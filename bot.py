@@ -136,16 +136,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     # Create channel post with converted links
                     channel_post = f"""
-🔥 DEAL FAM ALERT! 🔥
-🛒 Amazon Link: {converted_text}
+🔥 **New Deal Alert!**
 
-⏰ Limited Time: 6 hours left!
-Deal Fam Rating: ⭐⭐⭐⭐⭐
-Save Yours - Don't miss out!
+{converted_text}
 
-#DealFam #DailyDeals #AmazonDeals #FlipkartOffers
-#ShoppingDeals #IndianDeals #SaveMoney
-
+💰 **Affiliate Link Ready** - Tap to shop and earn!
+📱 *Shared via {user_name}*
 """
                     
                     # Send to your channel
@@ -260,11 +256,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
-
-
-python-telegram-bot==20.2
-flask==2.2.5
-gunicorn==20.1.0
