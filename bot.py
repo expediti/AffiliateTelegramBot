@@ -141,7 +141,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 {converted_text}
 
 💰 **Affiliate Link Ready** - Tap to shop and earn!
-📱 *Shared via {user_name}*
+
 """
                     
                     # Send to your channel
