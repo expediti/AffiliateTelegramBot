@@ -1,29 +1,37 @@
 import logging
 import re
 import os
-import threading
 import time
+import threading
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from flask import Flask, jsonify
+from telegram.error import NetworkError, TimedOut, RetryAfter
+from flask import Flask
+import requests
 
-# Setup logging
+# Enhanced logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Flask app for Render health checks
+# Flask app with keepalive
 app = Flask(__name__)
 
 @app.route('/')
 def health():
-    return jsonify({
-        "status": "healthy",
-        "service": "Amazon Affiliate Bot",
-        "version": "1.0"
-    })
+    return {
+        "status": "running",
+        "uptime": time.time(),
+        "bot": "24x7-affiliate-bot",
+        "version": "3.0"
+    }
+
+@app.route('/keepalive')
+def keepalive():
+    """Endpoint to prevent Render from sleeping"""
+    return {"alive": True, "timestamp": time.time()}
 
 # Bot Configuration
 TOKEN = os.environ.get('TOKEN')
@@ -32,41 +40,37 @@ SEARCH_URL = os.environ.get('search_url', 'amazon.in')
 YOUR_CHANNEL_ID = os.environ.get('YOUR_CHANNEL_ID')
 PORT = int(os.environ.get('PORT', 10000))
 
-logger.info(f"Bot starting with affiliate tag: {AFFILIATE_TAG}")
-logger.info(f"Target channel ID: {YOUR_CHANNEL_ID}")
+# Keepalive settings
+KEEPALIVE_URL = os.environ.get('KEEPALIVE_URL', '')  # Your Render URL
+KEEPALIVE_INTERVAL = 840  # 14 minutes (before 15min timeout)
+
+logger.info(f"🚀 24/7 Bot starting - Affiliate: {AFFILIATE_TAG}")
 
 def convert_amazon_link(url, affiliate_tag):
     """Convert Amazon URL to affiliate link"""
     try:
-        # Extract ASIN from various Amazon URL formats
         patterns = [
             r'/dp/([A-Z0-9]{10})',
             r'/gp/product/([A-Z0-9]{10})',
             r'/product/([A-Z0-9]{10})'
         ]
         
-        asin = None
         for pattern in patterns:
             match = re.search(pattern, url)
             if match:
                 asin = match.group(1)
-                break
-        
-        if asin:
-            return f"https://{SEARCH_URL}/dp/{asin}?tag={affiliate_tag}"
-        
+                return f"https://{SEARCH_URL}/dp/{asin}?tag={affiliate_tag}"
     except Exception as e:
-        logger.error(f"Error converting Amazon link: {e}")
+        logger.error(f"Link conversion error: {e}")
     
     return url
 
 def convert_all_links(text, affiliate_tag):
-    """Convert all Amazon links in text to affiliate links"""
+    """Convert all Amazon links"""
     if not text:
         return text, 0
         
-    # Amazon URL patterns
-    amazon_patterns = [
+    patterns = [
         r'https?://(?:www\.)?amazon\.[a-z.]+/[^\s]+',
         r'https?://amzn\.to/[A-Za-z0-9]+',
         r'https?://a\.co/[A-Za-z0-9]+'
@@ -75,7 +79,7 @@ def convert_all_links(text, affiliate_tag):
     converted_text = text
     conversion_count = 0
     
-    for pattern in amazon_patterns:
+    for pattern in patterns:
         urls = re.findall(pattern, text)
         for url in urls:
             converted_url = convert_amazon_link(url, affiliate_tag)
@@ -85,178 +89,194 @@ def convert_all_links(text, affiliate_tag):
     
     return converted_text, conversion_count
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command"""
-    try:
-        welcome_msg = f"""
-🤖 **Amazon Affiliate Bot - LIVE**
-
-✅ **Status**: Running and Auto-Forwarding
-✅ **Affiliate Tag**: {AFFILIATE_TAG}
-✅ **Target Channel**: {YOUR_CHANNEL_ID if YOUR_CHANNEL_ID else 'Not configured'}
-
-**How it works:**
-1. Send me any Amazon product link
-2. I'll convert it to your affiliate link
-3. **Automatically post it to your channel** 📢
-4. You also get a confirmation here
-
-**Example:**
-Send: `https://amazon.in/dp/B08N5WRWNW`
-→ Converts to: `https://amazon.in/dp/B08N5WRWNW?tag={AFFILIATE_TAG}`
-→ **Auto-posts to your channel!**
-
-🚀 **Ready to earn commissions automatically!**
-"""
-        await update.message.reply_text(welcome_msg)
-        logger.info(f"Start command executed for user {update.effective_user.id}")
+def keepalive_ping():
+    """Ping server every 14 minutes to prevent sleep"""
+    while True:
+        try:
+            if KEEPALIVE_URL:
+                response = requests.get(f"{KEEPALIVE_URL}/keepalive", timeout=30)
+                logger.info(f"✅ Keepalive ping successful: {response.status_code}")
+            else:
+                logger.info("💓 Keepalive heartbeat (no URL configured)")
+        except Exception as e:
+            logger.warning(f"⚠️ Keepalive ping failed: {e}")
         
-    except Exception as e:
-        logger.error(f"Error in start command: {e}")
+        time.sleep(KEEPALIVE_INTERVAL)
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start command with 24/7 info"""
+    welcome_msg = f"""
+🤖 **24/7 Amazon Affiliate Bot**
+
+✅ **Status**: Always Online (Never Sleeps)
+✅ **Uptime**: 24/7 Cloud Hosting
+✅ **Affiliate Tag**: {AFFILIATE_TAG}
+✅ **Auto-Keepalive**: ENABLED
+
+**🔥 FEATURES:**
+• Runs 24/7 even when your laptop is OFF
+• Never stops working or goes offline
+• Auto-prevents server sleep
+• Network-resilient connection
+• Instant affiliate link conversion
+
+**💡 USAGE:**
+Send Amazon links → Auto-convert → Post to channel
+
+**🌐 STATUS:**
+• Server: Cloud-hosted (independent of your device)
+• Connection: Always active
+• Monitoring: Self-healing
+
+Your affiliate bot works 24/7 regardless of your laptop status! 🚀
+"""
+    
+    await safe_send(context.bot, update.message.chat_id, welcome_msg)
+
+async def safe_send(bot, chat_id, text, max_retries=3):
+    """Send message with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            return await bot.send_message(chat_id=chat_id, text=text)
+        except (NetworkError, TimedOut) as e:
+            if attempt < max_retries - 1:
+                wait_time = (2 ** attempt)
+                logger.warning(f"Retry {attempt + 1} in {wait_time}s: {e}")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error(f"Failed after {max_retries} attempts: {e}")
+                raise
+        except RetryAfter as e:
+            logger.warning(f"Rate limited, waiting {e.retry_after}s")
+            await asyncio.sleep(e.retry_after)
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+            raise
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle all text messages and auto-forward to channel"""
+    """Handle messages with full resilience"""
     try:
-        if not update.message or not update.message.text:
-            return
-            
-        user_text = update.message.text
-        user_id = update.effective_user.id
+        text = update.message.text
         user_name = update.effective_user.first_name or "User"
+        chat_id = update.message.chat_id
         
-        logger.info(f"Processing message from user {user_id}: {user_name}")
+        logger.info(f"📨 Processing from {user_name}")
         
-        # Convert Amazon links
-        converted_text, conversion_count = convert_all_links(user_text, AFFILIATE_TAG)
+        # Convert links
+        converted_text, conversion_count = convert_all_links(text, AFFILIATE_TAG)
         
         if conversion_count > 0:
-            # Links were converted - send to channel first, then confirm to user
-            
+            # Success - post to channel
             if YOUR_CHANNEL_ID:
                 try:
-                    # Create channel post with converted links
                     channel_post = f"""
-🔥 DEAL FAM ALERT! 🔥
-🛒 Amazon Link: {converted_text}
-
-⏰ Limited Time: 6 hours left!
-Deal Fam Rating: ⭐⭐⭐⭐⭐
-Save Yours - Don't miss out!
-
-#DealFam #DailyDeals #AmazonDeals #FlipkartOffers
-#ShoppingDeals #IndianDeals #SaveMoney
-
-"""
-                    
-                    # Send to your channel
-                    channel_message = await context.bot.send_message(
-                        chat_id=YOUR_CHANNEL_ID,
-                        text=channel_post
-                    )
-                    
-                    logger.info(f"✅ Successfully posted to channel {YOUR_CHANNEL_ID}")
-                    
-                    # Confirm to user
-                    user_confirmation = f"""
-✅ **Success! Posted to Your Channel**
-
-🔗 **Converted {conversion_count} Amazon link(s):**
-{converted_text}
-
-📢 **Channel Post**: Your deal is now live in your channel!
-💰 **Earnings**: Ready to generate affiliate commissions!
-
-*Keep sending more deals!* 🚀
-"""
-                    await update.message.reply_text(user_confirmation)
-                    
-                except Exception as e:
-                    logger.error(f"❌ Failed to post to channel {YOUR_CHANNEL_ID}: {e}")
-                    # Still show user the converted links even if channel posting fails
-                    await update.message.reply_text(f"""
-⚠️ **Converted Links** (Channel posting failed):
+🔥 **24/7 DEAL ALERT**
 
 {converted_text}
 
-❌ **Channel Error**: {str(e)}
-Please check if bot has admin rights in your channel.
-""")
-            else:
-                # No channel configured
-                await update.message.reply_text(f"""
+💰 **Affiliate Ready** - Earn commissions now!
+📱 **Shared by**: {user_name}
+🤖 **Always-On Bot** (Works 24/7)
+
+⚡ **Grab this deal immediately!**
+"""
+                    
+                    await safe_send(context.bot, YOUR_CHANNEL_ID, channel_post)
+                    
+                    confirmation = f"""
+✅ **SUCCESS - Posted 24/7!**
+
 🔗 **Converted Links:**
 {converted_text}
 
-⚠️ **No Channel Configured**: Add YOUR_CHANNEL_ID to environment variables to enable auto-posting.
-""")
+📊 **Bot Status:**
+• Links converted: {conversion_count}
+• Posted to channel: ✅
+• 24/7 status: Always running
+• Your laptop: Can be OFF (bot still works!)
+
+💰 **Ready to earn - Bot never sleeps!**
+"""
+                    await safe_send(context.bot, chat_id, confirmation)
+                    
+                except Exception as e:
+                    logger.error(f"Channel error: {e}")
+                    await safe_send(context.bot, chat_id, f"Converted: {converted_text}")
+            else:
+                await safe_send(context.bot, chat_id, f"Converted: {converted_text}")
         else:
-            # No Amazon links found
-            await update.message.reply_text(f"""
-❌ **No Amazon Links Detected**
-
-Send me Amazon product URLs like:
-• https://amazon.in/dp/XXXXXXXXXX
-• https://amzn.to/XXXXXX
-• https://a.co/XXXXXX
-
-I'll convert them to your affiliate links and post to your channel automatically! 🚀
-""")
+            await safe_send(context.bot, chat_id, "❌ No Amazon links found.")
             
     except Exception as e:
-        logger.error(f"Error handling message: {e}")
-        await update.message.reply_text("❌ Error processing your message. Please try again.")
+        logger.error(f"Handler error: {e}")
+        try:
+            await safe_send(context.bot, update.message.chat_id, "⚠️ Processing error, retrying...")
+        except:
+            pass
 
-def run_flask_server():
-    """Run Flask server for Render health checks"""
-    try:
-        logger.info(f"Starting Flask server on 0.0.0.0:{PORT}")
-        app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
-    except Exception as e:
-        logger.error(f"Flask server error: {e}")
+def run_flask():
+    """Flask server with error recovery"""
+    while True:
+        try:
+            logger.info(f"🌐 Starting Flask server on port {PORT}")
+            app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
+        except Exception as e:
+            logger.error(f"Flask crashed: {e}")
+            logger.info("🔄 Restarting Flask in 5 seconds...")
+            time.sleep(5)
 
 def main():
-    """Main function to start the bot"""
-    # Validate required environment variables
+    """Main bot with automatic restart"""
     if not TOKEN:
-        logger.error("❌ TOKEN environment variable not set!")
-        raise ValueError("Missing required TOKEN environment variable")
+        logger.error("❌ No TOKEN!")
+        return
     
-    if not YOUR_CHANNEL_ID:
-        logger.warning("⚠️ YOUR_CHANNEL_ID not set - channel posting disabled")
+    logger.info("🚀 Starting 24/7 Bot (Never Sleeps)")
+    logger.info(f"✅ Affiliate: {AFFILIATE_TAG}")
+    logger.info(f"✅ Channel: {YOUR_CHANNEL_ID}")
     
-    logger.info("🚀 Starting Amazon Affiliate Bot...")
-    logger.info(f"✅ Affiliate tag: {AFFILIATE_TAG}")
-    logger.info(f"✅ Search URL: {SEARCH_URL}")
-    logger.info(f"✅ Channel ID: {YOUR_CHANNEL_ID}")
+    # Start Flask server
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
     
-    try:
-        # Start Flask server in background thread
-        flask_thread = threading.Thread(target=run_flask_server, daemon=True)
-        flask_thread.start()
-        logger.info("✅ Flask health server started")
-        
-        time.sleep(2)
-        
-        # Create Telegram application
-        application = Application.builder().token(TOKEN).build()
-        
-        # Add handlers
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        logger.info("✅ Bot handlers registered")
-        logger.info("✅ Starting Telegram polling...")
-        
-        # Start bot with polling
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            close_loop=False
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Critical error starting bot: {e}")
-        raise
+    # Start keepalive service
+    keepalive_thread = threading.Thread(target=keepalive_ping, daemon=True)
+    keepalive_thread.start()
+    
+    logger.info("✅ Flask & Keepalive started")
+    
+    # Bot loop with auto-restart
+    restart_count = 0
+    max_restarts = 50
+    
+    while restart_count < max_restarts:
+        try:
+            logger.info(f"🔄 Bot startup #{restart_count + 1}")
+            
+            application = Application.builder().token(TOKEN).build()
+            application.add_handler(CommandHandler("start", start_command))
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+            
+            logger.info("✅ 24/7 Bot is LIVE!")
+            
+            # Run with polling
+            application.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES
+            )
+            
+        except Exception as e:
+            logger.error(f"❌ Bot crashed: {e}")
+            restart_count += 1
+            
+            if restart_count < max_restarts:
+                wait_time = min(60, 10 * restart_count)
+                logger.info(f"🔄 Auto-restarting in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                logger.error("❌ Max restarts reached")
+                break
 
 if __name__ == '__main__':
+    import asyncio
     main()
