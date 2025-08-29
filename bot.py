@@ -137,9 +137,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # Create channel post with converted links
                     channel_post = f"""
 🔥 **New Deal Alert!**
-
-{converted_text}
-
+**Amazon-!** {converted_text}
 💰 **Affiliate Link Ready** - Tap to shop and earn!
 
 """
