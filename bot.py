@@ -1,148 +1,214 @@
 import logging
 import re
 import os
+import threading
+import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from flask import Flask
-from threading import Thread
+from flask import Flask, jsonify
 
-# Flask app for Render health check
+# Setup logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Flask app for Render health checks (Required by Render)
 app = Flask(__name__)
 
 @app.route('/')
 def health():
-    return "🤖 Amazon Affiliate Bot is running!"
+    return jsonify({
+        "status": "healthy",
+        "service": "Amazon Affiliate Bot",
+        "version": "1.0"
+    })
 
-# Configuration
-TOKEN = os.getenv('TOKEN')
-AFFILIATE_TAG = os.getenv('affiliate_tag', 'yourname-21')
-SEARCH_URL = os.getenv('search_url', 'amazon.in')
-YOUR_CHANNEL_ID = os.getenv('YOUR_CHANNEL_ID', '-1001234567890')
+@app.route('/health')
+def health_check():
+    return jsonify({
+        "bot_status": "running",
+        "affiliate_tag": AFFILIATE_TAG if 'AFFILIATE_TAG' in globals() else "not-set"
+    })
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Bot Configuration (Environment Variables)
+TOKEN = os.environ.get('TOKEN')
+AFFILIATE_TAG = os.environ.get('affiliate_tag', 'defaulttag-21')
+SEARCH_URL = os.environ.get('search_url', 'amazon.in')
+YOUR_CHANNEL_ID = os.environ.get('YOUR_CHANNEL_ID')
+PORT = int(os.environ.get('PORT', 10000))  # Render default port
+
+logger.info(f"Bot starting with affiliate tag: {AFFILIATE_TAG}")
+logger.info(f"Flask server will run on port: {PORT}")
 
 def convert_amazon_link(url, affiliate_tag):
     """Convert Amazon URL to affiliate link"""
     try:
-        # Extract ASIN from URL
-        asin_match = re.search(r'/dp/([A-Z0-9]{10})', url)
-        if not asin_match:
-            asin_match = re.search(r'/gp/product/([A-Z0-9]{10})', url)
+        # Extract ASIN from various Amazon URL formats
+        patterns = [
+            r'/dp/([A-Z0-9]{10})',
+            r'/gp/product/([A-Z0-9]{10})',
+            r'/product/([A-Z0-9]{10})'
+        ]
         
-        if asin_match:
-            asin = asin_match.group(1)
-            affiliate_url = f"https://{SEARCH_URL}/dp/{asin}?tag={affiliate_tag}"
-            return affiliate_url
+        asin = None
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                asin = match.group(1)
+                break
+        
+        if asin:
+            # Create clean affiliate URL
+            return f"https://{SEARCH_URL}/dp/{asin}?tag={affiliate_tag}"
+        
     except Exception as e:
-        logger.error(f"Error converting link: {e}")
+        logger.error(f"Error converting Amazon link: {e}")
     
     return url
 
 def convert_all_links(text, affiliate_tag):
-    """Convert all Amazon links in text"""
+    """Convert all Amazon links in text to affiliate links"""
+    if not text:
+        return text
+        
+    # Amazon URL patterns
     amazon_patterns = [
-        r'https?://(?:www\.)?amazon\.[a-z.]+/.*?(?=\s|$)',
+        r'https?://(?:www\.)?amazon\.[a-z.]+/[^\s]+',
         r'https?://amzn\.to/[A-Za-z0-9]+',
         r'https?://a\.co/[A-Za-z0-9]+'
     ]
     
     converted_text = text
+    conversion_count = 0
     
     for pattern in amazon_patterns:
         urls = re.findall(pattern, text)
         for url in urls:
             converted_url = convert_amazon_link(url, affiliate_tag)
-            converted_text = converted_text.replace(url, converted_url)
+            if converted_url != url:
+                converted_text = converted_text.replace(url, converted_url)
+                conversion_count += 1
     
+    logger.info(f"Converted {conversion_count} Amazon links")
     return converted_text
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command handler"""
-    welcome_message = f"""
-🤖 **Amazon Affiliate Bot is Live!**
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    try:
+        welcome_msg = f"""
+🤖 **Amazon Affiliate Bot - LIVE**
 
-✅ Convert Amazon links to your affiliate links
-✅ Running 24/7 on Render
+✅ **Status**: Running on Render.com
+✅ **Affiliate Tag**: {AFFILIATE_TAG}
+✅ **Target Domain**: {SEARCH_URL}
 
-**Your affiliate tag:** {AFFILIATE_TAG}
+**How to use:**
+1. Send me any Amazon product link
+2. I'll convert it to your affiliate link instantly
+3. Perfect for deals and promotions!
 
-**Test it:** Send me any Amazon product link!
+**Example:**
+Send: `https://amazon.in/dp/B08N5WRWNW`
+Get: `https://amazon.in/dp/B08N5WRWNW?tag={AFFILIATE_TAG}`
 
-Example: https://amazon.in/dp/B08N5WRWNW
+🚀 **Ready to earn commissions!**
 """
-    await update.message.reply_text(welcome_message)
+        await update.message.reply_text(welcome_msg)
+        logger.info(f"Start command executed for user {update.effective_user.id}")
+        
+    except Exception as e:
+        logger.error(f"Error in start command: {e}")
+        await update.message.reply_text("❌ Error processing start command. Please try again.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming messages"""
+    """Handle all text messages"""
     try:
-        message = update.message
-        text = message.text
-        
-        if not text:
+        if not update.message or not update.message.text:
             return
+            
+        user_text = update.message.text
+        user_id = update.effective_user.id
         
-        # Convert affiliate links
-        converted_text = convert_all_links(text, AFFILIATE_TAG)
+        logger.info(f"Processing message from user {user_id}")
         
-        if converted_text != text:
+        # Convert Amazon links
+        converted_text = convert_all_links(user_text, AFFILIATE_TAG)
+        
+        if converted_text != user_text:
+            # Links were converted
             response = f"🔗 **Converted Links:**\n\n{converted_text}"
-            await message.reply_text(response)
+            await update.message.reply_text(response)
             
             # Forward to channel if configured
-            if YOUR_CHANNEL_ID and YOUR_CHANNEL_ID != '-1001234567890':
+            if YOUR_CHANNEL_ID:
                 try:
-                    forward_text = f"🔥 **Deal Alert!**\n\n{converted_text}"
-                    await context.bot.send_message(chat_id=YOUR_CHANNEL_ID, text=forward_text)
-                    await message.reply_text("✅ Also posted to your channel!")
+                    await context.bot.send_message(
+                        chat_id=YOUR_CHANNEL_ID,
+                        text=f"🔥 **New Deal:**\n\n{converted_text}\n\n📢 _Auto-converted by bot_"
+                    )
+                    await update.message.reply_text("✅ Also posted to your channel!")
+                    logger.info(f"Message forwarded to channel {YOUR_CHANNEL_ID}")
                 except Exception as e:
-                    logger.error(f"Error forwarding to channel: {e}")
+                    logger.error(f"Failed to forward to channel: {e}")
+                    await update.message.reply_text("⚠️ Converted link but couldn't post to channel.")
         else:
-            await message.reply_text("❌ No Amazon links found to convert.")
-    
+            # No Amazon links found
+            await update.message.reply_text("❌ No Amazon links detected. Send me an Amazon product URL to convert!")
+            
     except Exception as e:
         logger.error(f"Error handling message: {e}")
+        await update.message.reply_text("❌ Error processing your message. Please try again.")
 
-def run_flask():
-    """Run Flask server for health check"""
+def run_flask_server():
+    """Run Flask server for Render health checks"""
     try:
-        port = int(os.environ.get("PORT", 8000))
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+        logger.info(f"Starting Flask server on 0.0.0.0:{PORT}")
+        app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
     except Exception as e:
         logger.error(f"Flask server error: {e}")
 
 def main():
-    """Start the bot"""
+    """Main function to start the bot"""
+    # Validate required environment variables
     if not TOKEN:
-        logger.error("❌ No TOKEN provided!")
-        return
+        logger.error("❌ TOKEN environment variable not set!")
+        raise ValueError("Missing required TOKEN environment variable")
     
     logger.info("🚀 Starting Amazon Affiliate Bot...")
-    
-    # Start Flask server in background
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    logger.info("✅ Flask health server started")
+    logger.info(f"✅ Affiliate tag: {AFFILIATE_TAG}")
+    logger.info(f"✅ Search URL: {SEARCH_URL}")
+    logger.info(f"✅ Channel ID: {YOUR_CHANNEL_ID}")
     
     try:
-        # Create application with error handling
+        # Start Flask server in background thread
+        flask_thread = threading.Thread(target=run_flask_server, daemon=True)
+        flask_thread.start()
+        logger.info("✅ Flask health server started")
+        
+        # Give Flask time to start
+        time.sleep(2)
+        
+        # Create Telegram application
         application = Application.builder().token(TOKEN).build()
         
-        # Add handlers
-        application.add_handler(CommandHandler("start", start))
+        # Add command and message handlers
+        application.add_handler(CommandHandler("start", start_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         logger.info("✅ Bot handlers registered")
-        logger.info(f"✅ Affiliate tag: {AFFILIATE_TAG}")
+        logger.info("✅ Starting Telegram polling...")
         
-        # Start polling with error handling
+        # Start bot with polling
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
+            drop_pending_updates=True,
+            close_loop=False
         )
         
     except Exception as e:
-        logger.error(f"❌ Bot startup error: {e}")
+        logger.error(f"❌ Critical error starting bot: {e}")
         raise
 
 if __name__ == '__main__':
