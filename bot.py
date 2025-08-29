@@ -14,7 +14,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Flask app for Render health checks (Required by Render)
+# Flask app for Render health checks
 app = Flask(__name__)
 
 @app.route('/')
@@ -25,22 +25,15 @@ def health():
         "version": "1.0"
     })
 
-@app.route('/health')
-def health_check():
-    return jsonify({
-        "bot_status": "running",
-        "affiliate_tag": AFFILIATE_TAG if 'AFFILIATE_TAG' in globals() else "not-set"
-    })
-
-# Bot Configuration (Environment Variables)
+# Bot Configuration
 TOKEN = os.environ.get('TOKEN')
 AFFILIATE_TAG = os.environ.get('affiliate_tag', 'defaulttag-21')
 SEARCH_URL = os.environ.get('search_url', 'amazon.in')
 YOUR_CHANNEL_ID = os.environ.get('YOUR_CHANNEL_ID')
-PORT = int(os.environ.get('PORT', 10000))  # Render default port
+PORT = int(os.environ.get('PORT', 10000))
 
 logger.info(f"Bot starting with affiliate tag: {AFFILIATE_TAG}")
-logger.info(f"Flask server will run on port: {PORT}")
+logger.info(f"Target channel ID: {YOUR_CHANNEL_ID}")
 
 def convert_amazon_link(url, affiliate_tag):
     """Convert Amazon URL to affiliate link"""
@@ -60,7 +53,6 @@ def convert_amazon_link(url, affiliate_tag):
                 break
         
         if asin:
-            # Create clean affiliate URL
             return f"https://{SEARCH_URL}/dp/{asin}?tag={affiliate_tag}"
         
     except Exception as e:
@@ -71,7 +63,7 @@ def convert_amazon_link(url, affiliate_tag):
 def convert_all_links(text, affiliate_tag):
     """Convert all Amazon links in text to affiliate links"""
     if not text:
-        return text
+        return text, 0
         
     # Amazon URL patterns
     amazon_patterns = [
@@ -91,8 +83,7 @@ def convert_all_links(text, affiliate_tag):
                 converted_text = converted_text.replace(url, converted_url)
                 conversion_count += 1
     
-    logger.info(f"Converted {conversion_count} Amazon links")
-    return converted_text
+    return converted_text, conversion_count
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
@@ -100,62 +91,112 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         welcome_msg = f"""
 🤖 **Amazon Affiliate Bot - LIVE**
 
-✅ **Status**: Running on Render.com
+✅ **Status**: Running and Auto-Forwarding
 ✅ **Affiliate Tag**: {AFFILIATE_TAG}
-✅ **Target Domain**: {SEARCH_URL}
+✅ **Target Channel**: {YOUR_CHANNEL_ID if YOUR_CHANNEL_ID else 'Not configured'}
 
-**How to use:**
+**How it works:**
 1. Send me any Amazon product link
-2. I'll convert it to your affiliate link instantly
-3. Perfect for deals and promotions!
+2. I'll convert it to your affiliate link
+3. **Automatically post it to your channel** 📢
+4. You also get a confirmation here
 
 **Example:**
 Send: `https://amazon.in/dp/B08N5WRWNW`
-Get: `https://amazon.in/dp/B08N5WRWNW?tag={AFFILIATE_TAG}`
+→ Converts to: `https://amazon.in/dp/B08N5WRWNW?tag={AFFILIATE_TAG}`
+→ **Auto-posts to your channel!**
 
-🚀 **Ready to earn commissions!**
+🚀 **Ready to earn commissions automatically!**
 """
         await update.message.reply_text(welcome_msg)
         logger.info(f"Start command executed for user {update.effective_user.id}")
         
     except Exception as e:
         logger.error(f"Error in start command: {e}")
-        await update.message.reply_text("❌ Error processing start command. Please try again.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle all text messages"""
+    """Handle all text messages and auto-forward to channel"""
     try:
         if not update.message or not update.message.text:
             return
             
         user_text = update.message.text
         user_id = update.effective_user.id
+        user_name = update.effective_user.first_name or "User"
         
-        logger.info(f"Processing message from user {user_id}")
+        logger.info(f"Processing message from user {user_id}: {user_name}")
         
         # Convert Amazon links
-        converted_text = convert_all_links(user_text, AFFILIATE_TAG)
+        converted_text, conversion_count = convert_all_links(user_text, AFFILIATE_TAG)
         
-        if converted_text != user_text:
-            # Links were converted
-            response = f"🔗 **Converted Links:**\n\n{converted_text}"
-            await update.message.reply_text(response)
+        if conversion_count > 0:
+            # Links were converted - send to channel first, then confirm to user
             
-            # Forward to channel if configured
             if YOUR_CHANNEL_ID:
                 try:
-                    await context.bot.send_message(
+                    # Create channel post with converted links
+                    channel_post = f"""
+🔥 **New Deal Alert!**
+
+{converted_text}
+
+💰 **Affiliate Link Ready** - Tap to shop and earn!
+📱 *Shared via {user_name}*
+"""
+                    
+                    # Send to your channel
+                    channel_message = await context.bot.send_message(
                         chat_id=YOUR_CHANNEL_ID,
-                        text=f"🔥 **New Deal:**\n\n{converted_text}\n\n📢 _Auto-converted by bot_"
+                        text=channel_post
                     )
-                    await update.message.reply_text("✅ Also posted to your channel!")
-                    logger.info(f"Message forwarded to channel {YOUR_CHANNEL_ID}")
+                    
+                    logger.info(f"✅ Successfully posted to channel {YOUR_CHANNEL_ID}")
+                    
+                    # Confirm to user
+                    user_confirmation = f"""
+✅ **Success! Posted to Your Channel**
+
+🔗 **Converted {conversion_count} Amazon link(s):**
+{converted_text}
+
+📢 **Channel Post**: Your deal is now live in your channel!
+💰 **Earnings**: Ready to generate affiliate commissions!
+
+*Keep sending more deals!* 🚀
+"""
+                    await update.message.reply_text(user_confirmation)
+                    
                 except Exception as e:
-                    logger.error(f"Failed to forward to channel: {e}")
-                    await update.message.reply_text("⚠️ Converted link but couldn't post to channel.")
+                    logger.error(f"❌ Failed to post to channel {YOUR_CHANNEL_ID}: {e}")
+                    # Still show user the converted links even if channel posting fails
+                    await update.message.reply_text(f"""
+⚠️ **Converted Links** (Channel posting failed):
+
+{converted_text}
+
+❌ **Channel Error**: {str(e)}
+Please check if bot has admin rights in your channel.
+""")
+            else:
+                # No channel configured
+                await update.message.reply_text(f"""
+🔗 **Converted Links:**
+{converted_text}
+
+⚠️ **No Channel Configured**: Add YOUR_CHANNEL_ID to environment variables to enable auto-posting.
+""")
         else:
             # No Amazon links found
-            await update.message.reply_text("❌ No Amazon links detected. Send me an Amazon product URL to convert!")
+            await update.message.reply_text(f"""
+❌ **No Amazon Links Detected**
+
+Send me Amazon product URLs like:
+• https://amazon.in/dp/XXXXXXXXXX
+• https://amzn.to/XXXXXX
+• https://a.co/XXXXXX
+
+I'll convert them to your affiliate links and post to your channel automatically! 🚀
+""")
             
     except Exception as e:
         logger.error(f"Error handling message: {e}")
@@ -176,6 +217,9 @@ def main():
         logger.error("❌ TOKEN environment variable not set!")
         raise ValueError("Missing required TOKEN environment variable")
     
+    if not YOUR_CHANNEL_ID:
+        logger.warning("⚠️ YOUR_CHANNEL_ID not set - channel posting disabled")
+    
     logger.info("🚀 Starting Amazon Affiliate Bot...")
     logger.info(f"✅ Affiliate tag: {AFFILIATE_TAG}")
     logger.info(f"✅ Search URL: {SEARCH_URL}")
@@ -187,13 +231,12 @@ def main():
         flask_thread.start()
         logger.info("✅ Flask health server started")
         
-        # Give Flask time to start
         time.sleep(2)
         
         # Create Telegram application
         application = Application.builder().token(TOKEN).build()
         
-        # Add command and message handlers
+        # Add handlers
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
