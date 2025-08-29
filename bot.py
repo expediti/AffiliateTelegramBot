@@ -137,8 +137,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # Create channel post with converted links
                     channel_post = f"""
 🔥 DEAL FAM ALERT! 🔥
-**Amazon-!** {converted_text}
-💰 **Affiliate Link Ready** - Tap to shop and earn!
+🛒 Amazon Link: {converted_text}
+⏰ Limited Time: 6 hours left!
+Deal Fam Rating: ⭐⭐⭐⭐⭐
+Save Yours - Don't miss out!
+
+#DealFam #DailyDeals #AmazonDeals #FlipkartOffers
+#ShoppingDeals #IndianDeals #SaveMoney
 
 """
                     
