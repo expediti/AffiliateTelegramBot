@@ -138,6 +138,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     channel_post = f"""
 🔥 DEAL FAM ALERT! 🔥
 🛒 Amazon Link: {converted_text}
+
 ⏰ Limited Time: 6 hours left!
 Deal Fam Rating: ⭐⭐⭐⭐⭐
 Save Yours - Don't miss out!
